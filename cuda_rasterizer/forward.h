@@ -28,6 +28,7 @@ namespace FORWARD
 		const glm::vec4* rotations,
 		const float* opacities,
 		const float* shs,
+		const float* shs_bgr,
 		bool* clamped,
 		const float* cov3D_precomp,
 		const float* colors_precomp,
@@ -42,6 +43,7 @@ namespace FORWARD
 		float* depths,
 		float* cov3Ds,
 		float* colors,
+		float* colors_bgr,
 		float4* conic_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
@@ -55,11 +57,13 @@ namespace FORWARD
 		int W, int H,
 		const float2* points_xy_image,
 		const float* features,
+		const float* features_bgr,
 		const float4* conic_opacity,
 		float* final_T,
 		uint32_t* n_contrib,
 		const float* bg_color,
-		float* out_color);
+		float* out_color,
+		float* out_color_bgr);
 }
 
 

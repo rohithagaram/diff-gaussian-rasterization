@@ -162,6 +162,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.cov3D, P * 6, 128);
 	obtain(chunk, geom.conic_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
+	obtain(chunk, geom.bgr, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
@@ -204,6 +205,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int width, int height,
 	const float* means3D,
 	const float* shs,
+	const float* shs_bgr,
 	const float* colors_precomp,
 	const float* opacities,
 	const float* scales,
@@ -216,6 +218,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	float* out_color_bgr,
 	int* radii,
 	bool debug)
 {
@@ -253,6 +256,7 @@ int CudaRasterizer::Rasterizer::forward(
 		(glm::vec4*)rotations,
 		opacities,
 		shs,
+		shs_bgr,
 		geomState.clamped,
 		cov3D_precomp,
 		colors_precomp,
@@ -266,6 +270,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.depths,
 		geomState.cov3D,
 		geomState.rgb,
+		geomState.bgr,
 		geomState.conic_opacity,
 		tile_grid,
 		geomState.tiles_touched,
@@ -319,6 +324,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
+	const float* feature_ptr_bgr = colors_precomp != nullptr ? colors_precomp : geomState.bgr;
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
@@ -326,11 +332,13 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		geomState.means2D,
 		feature_ptr,
+		feature_ptr_bgr,
 		geomState.conic_opacity,
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		out_color_bgr), debug)
 
 	return num_rendered;
 }
@@ -343,6 +351,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const int width, int height,
 	const float* means3D,
 	const float* shs,
+	const float* shs_bgr,
 	const float* colors_precomp,
 	const float* scales,
 	const float scale_modifier,
@@ -357,13 +366,16 @@ void CudaRasterizer::Rasterizer::backward(
 	char* binning_buffer,
 	char* img_buffer,
 	const float* dL_dpix,
+	const float* dL_dpix_bgr,
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dopacity,
 	float* dL_dcolor,
+	float* dL_dcolor_bgr,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
 	float* dL_dsh,
+	float* dL_dsh_bgr,
 	float* dL_dscale,
 	float* dL_drot,
 	bool debug)
@@ -386,7 +398,8 @@ void CudaRasterizer::Rasterizer::backward(
 	// Compute loss gradients w.r.t. 2D mean position, conic matrix,
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
-	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	const float* color_ptr     = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	const float* color_ptr_bgr = (colors_precomp != nullptr) ? colors_precomp : geomState.bgr;
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,
@@ -397,13 +410,16 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		color_ptr,
+		color_ptr_bgr,
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		dL_dpix,
+		dL_dpix_bgr,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dcolor,
+		dL_dcolor_bgr), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -413,6 +429,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)means3D,
 		radii,
 		shs,
+		shs_bgr,
 		geomState.clamped,
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
@@ -427,8 +444,10 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dconic,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
+		dL_dcolor_bgr,
 		dL_dcov3D,
 		dL_dsh,
+		dL_dsh_bgr,
 		(glm::vec3*)dL_dscale,
 		(glm::vec4*)dL_drot), debug)
 }
