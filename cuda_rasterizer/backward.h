@@ -46,7 +46,6 @@ namespace BACKWARD
 		const float3* means,
 		const int* radii,
 		const float* shs,
-		const float* shs_bgr,
 		const bool* clamped,
 		const glm::vec3* scales,
 		const glm::vec4* rotations,
@@ -61,10 +60,8 @@ namespace BACKWARD
 		const float* dL_dconics,
 		glm::vec3* dL_dmeans,
 		float* dL_dcolor,
-		float* dL_dcolor_bgr,
 		float* dL_dcov3D,
 		float* dL_dsh,
-		float* dL_dsh_bgr,
 		glm::vec3* dL_dscale,
 		glm::vec4* dL_drot);
 }

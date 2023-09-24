@@ -37,7 +37,7 @@ namespace CudaRasterizer
 			const int width, int height,
 			const float* means3D,
 			const float* shs,
-			const float* shs_bgr,
+			const float* s_features,
 			const float* colors_precomp,
 			const float* opacities,
 			const float* scales,
@@ -84,7 +84,6 @@ namespace CudaRasterizer
 			float* dL_dmean3D,
 			float* dL_dcov3D,
 			float* dL_dsh,
-			float* dL_dsh_bgr,
 			float* dL_dscale,
 			float* dL_drot,
 			bool debug);
