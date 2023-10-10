@@ -71,7 +71,12 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 
-
+__global__ void parallel_feature_renderer(const float* s_features, float* features_rendered,  int collect_id, float alpha,  float T, int features_size_) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid < features_size_) {
+        features_rendered[tid] = s_features[collect_id* features_size_ + tid]* alpha * T;
+    }
+}
 
 // Forward version of 2D covariance matrix computation
 __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
@@ -235,10 +240,20 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
+	
+
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
+	if(idx == P -1){
+		printf("grid.x %d  \n", grid.x);
+		printf("grid.y %d  \n", grid.y);
+		printf("rect_max.x %d  \n", rect_max.x);
+		printf("rect_min.x %d  \n", rect_min.x);
+		printf("rect_max.y %d  \n", rect_max.y);
+		printf("rect_min.y %d  \n", rect_min.y);
+	}
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
-
+	
 	// If colors have been precomputed, use them, otherwise convert
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
@@ -276,7 +291,8 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
-	float* __restrict__ out_features)
+	float* __restrict__ out_features,
+	float* __restrict__ alpha_tensor,int num_rendered)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -294,9 +310,18 @@ renderCUDA(
 
 	// Load start/end range of IDs to process in bit sorted list.
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	
+
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
-
+	/*
+	if(block.group_index().y == 0 && block.group_index().x==0){
+		printf("range.x %d = \n", range.x);
+		printf("range.y %d = ", range.y);
+		printf("rounds %d \n", rounds);
+		printf("toDo %d \n",toDo);
+	}
+	*/
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
@@ -308,8 +333,11 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 	float features_rendered[FEATURE_SIZE] = { 0 };
-
+	int features_size_ = FEATURE_SIZE;
+	int blockSize = 256;
+    int numBlocks = (FEATURE_SIZE + blockSize - 1) / blockSize;
 	// Iterate over batches until all done or range is complete
+	int thread_0_collect_id = 0;
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
@@ -319,9 +347,13 @@ renderCUDA(
 
 		// Collectively fetch per-Gaussian data from global to shared
 		int progress = i * BLOCK_SIZE + block.thread_rank();
+		
 		if (range.x + progress < range.y)
 		{
 			int coll_id = point_list[range.x + progress];
+			
+			thread_0_collect_id = range.x + progress;
+			
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -348,6 +380,10 @@ renderCUDA(
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
 			float alpha = min(0.99f, con_o.w * exp(power));
+
+			if(block.thread_rank() == 0){
+				alpha_tensor[thread_0_collect_id+j] = alpha;
+			}
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -362,10 +398,13 @@ renderCUDA(
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 				
 			}
-
+			
 			for (int ch=0; ch<FEATURE_SIZE; ch++){
 				features_rendered[ch] += s_features[collected_id[j] * FEATURE_SIZE + ch] * alpha * T;
 			}
+			
+			//parallel_feature_renderer<<<numBlocks, blockSize>>>(s_features,features_rendered, collected_id[j],alpha, T,features_size_);
+			
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -404,7 +443,8 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* out_features)
+	float* out_features,
+	float* alpha_tensor,int num_rendered)
 {
 	renderCUDA<NUM_CHANNELS,FEATURES_SIZE> << <grid, block >> > (
 		ranges,
@@ -418,7 +458,8 @@ void FORWARD::render(
 		n_contrib,
 		bg_color,
 		out_color,
-		out_features);
+		out_features,
+		alpha_tensor,num_rendered);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -474,4 +515,5 @@ void FORWARD::preprocess(int P, int D, int M,
 		tiles_touched,
 		prefiltered
 		);
+	cudaDeviceSynchronize();
 };

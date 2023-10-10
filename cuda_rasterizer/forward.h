@@ -61,7 +61,8 @@ namespace FORWARD
 		uint32_t* n_contrib,
 		const float* bg_color,
 		float* out_color,
-		float* out_color_bgr);
+		float* out_color_bgr,
+		float* alpha_tensor,int num_rendered);
 }
 
 

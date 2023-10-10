@@ -21,7 +21,7 @@
 #include <cub/device/device_radix_sort.cuh>
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
-
+#include <torch/extension.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
@@ -107,6 +107,10 @@ __global__ void duplicateWithKeys(
 				off++;
 			}
 		}
+		if (idx == P-1){
+			printf("Rohith Debug: %d\n", off);
+		}
+
 	}
 }
 
@@ -194,12 +198,32 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 	return binning;
 }
 
+
+
+CudaRasterizer::AlphaState CudaRasterizer::AlphaState::fromChunk(char*& chunk, size_t P)
+{
+	AlphaState binning;
+	obtain(chunk, binning.point_list, P, 128);
+	obtain(chunk, binning.point_list_unsorted, P, 128);
+	obtain(chunk, binning.point_list_keys, P, 128);
+	obtain(chunk, binning.point_list_keys_unsorted, P, 128);
+	cub::DeviceRadixSort::SortPairs(
+		nullptr, binning.sorting_size,
+		binning.point_list_keys_unsorted, binning.point_list_keys,
+		binning.point_list_unsorted, binning.point_list, P);
+	obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
+	return binning;
+}
+
+
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
-int CudaRasterizer::Rasterizer::forward(
+std::tuple<int, torch::Tensor, torch::Tensor,torch::Tensor>
+CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
+	std::function<char* (size_t)> alphaBuffer,
 	const int P, int D, int M,
 	const float* background,
 	const int width, int height,
@@ -276,16 +300,30 @@ int CudaRasterizer::Rasterizer::forward(
 	), debug)
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
+	
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
-	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
+    	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
-	int num_rendered;
+	int num_rendered;	
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+
+	
+	
+
 
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+
+
+	// Rohith create the alpha buffer 
+
+	size_t alpha_chunk_size = required<AlphaState>(num_rendered);
+	char* alpha_chunkptr = alphaBuffer(alpha_chunk_size);
+	AlphaState alphaState = AlphaState::fromChunk(binning_chunkptr, num_rendered);
+
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
@@ -311,7 +349,6 @@ int CudaRasterizer::Rasterizer::forward(
 		num_rendered, 0, 32 + bit), debug)
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
-
 	// Identify start and end of per-tile workloads in sorted list
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
@@ -319,6 +356,48 @@ int CudaRasterizer::Rasterizer::forward(
 			binningState.point_list_keys,
 			imgState.ranges);
 	CHECK_CUDA(, debug)
+
+
+	//Rohith code started
+	printf("Rohith Debug num_rendered: %d\n", num_rendered);
+
+	uint32_t point_offsets[P];   
+	CHECK_CUDA(cudaMemcpy(point_offsets,  geomState.point_offsets, P *sizeof(int), cudaMemcpyDeviceToHost), debug);
+	
+	uint32_t tiles_touched[P];   
+	CHECK_CUDA(cudaMemcpy(tiles_touched,  geomState.tiles_touched, P *sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+	
+
+	uint64_t* cpuData_keys;
+	cpuData_keys = (uint64_t*)malloc(sizeof(uint64_t) * num_rendered);
+	cudaMemcpy(cpuData_keys, binningState.point_list_keys,num_rendered*sizeof(uint64_t), cudaMemcpyDeviceToHost);
+	torch::TensorOptions options = torch::TensorOptions().dtype(torch::kInt64);
+	torch::Tensor tensor_keys = torch::from_blob(cpuData_keys, {num_rendered}, options);
+
+	uint32_t* cpuData_vals;
+	cpuData_vals = (uint32_t*)malloc(sizeof(uint32_t) * num_rendered);
+	cudaMemcpy(cpuData_vals, binningState.point_list,num_rendered*sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	torch::TensorOptions options_32 = torch::TensorOptions().dtype(torch::kInt32);
+	torch::Tensor tensor_vals = torch::from_blob(cpuData_vals, {num_rendered}, options_32);
+
+	
+	uint2* image_ranges[tile_grid.x * tile_grid.y ];
+	CHECK_CUDA(cudaMemcpy(image_ranges, imgState.ranges, tile_grid.x * tile_grid.y * sizeof(uint2), cudaMemcpyDeviceToHost), debug);
+	/*
+	
+	for (int i = 0; i < (tile_grid.x * tile_grid.y); i++) {
+		std::cout<<image_ranges[i].x<<"  ";
+		std::cout<<image_ranges[i].y<<std::endl;
+    }
+
+	*/
+	c10::TensorOptions float_options;
+	torch::Device device(torch::kCUDA, 0);
+	float_options = float_options.dtype(c10::ScalarType::Float).device(device);
+	torch::Tensor alpha_tensor    = torch::full({num_rendered}, 0.0,float_options);
+	// Rohith code end
+
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
@@ -336,9 +415,10 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.n_contrib,
 		background,
 		out_color,
-		out_features), debug)
+		out_features,
+		alpha_tensor.contiguous().data<float>(),num_rendered), debug)
 
-	return num_rendered;
+	return std::make_tuple(num_rendered, tensor_keys,tensor_vals,alpha_tensor);
 }
 
 // Produce necessary gradients for optimization, corresponding

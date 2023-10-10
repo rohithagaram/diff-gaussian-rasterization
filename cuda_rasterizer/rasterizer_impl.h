@@ -65,6 +65,20 @@ namespace CudaRasterizer
 		static BinningState fromChunk(char*& chunk, size_t P);
 	};
 
+
+	struct AlphaState
+	{
+		size_t sorting_size;
+		uint64_t* point_list_keys_unsorted;
+		uint64_t* point_list_keys;
+		uint32_t* point_list_unsorted;
+		uint32_t* point_list;
+		char* list_sorting_space;
+
+		static AlphaState fromChunk(char*& chunk, size_t P);
+	};
+
+
 	template<typename T> 
 	size_t required(size_t P)
 	{
