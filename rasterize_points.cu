@@ -23,6 +23,7 @@
 #include <fstream>
 #include <string>
 #include <functional>
+#include <torch/extension.h>
 
 std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
     auto lambda = [&t](size_t N) {
@@ -32,7 +33,7 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
     return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -53,7 +54,8 @@ RasterizeGaussiansCUDA(
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
-	const bool debug)
+	const bool debug,
+	const bool send_alphas)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -75,11 +77,16 @@ RasterizeGaussiansCUDA(
   torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
   torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
   torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
+
+
+  
   std::function<char*(size_t)> geomFunc = resizeFunctional(geomBuffer);
   std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
   std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
   
+  
   int rendered = 0;
+  torch::Tensor tiles_depth_sorted, gaussian_sorted,alpha_tensor;
   if(P != 0)
   {
 	  int M = 0;
@@ -88,7 +95,7 @@ RasterizeGaussiansCUDA(
 		M = sh.size(1);
       }
 
-	  rendered = CudaRasterizer::Rasterizer::forward(
+	std::tie(rendered, tiles_depth_sorted, gaussian_sorted,alpha_tensor) = CudaRasterizer::Rasterizer::forward(
 	    geomFunc,
 		binningFunc,
 		imgFunc,
@@ -113,9 +120,10 @@ RasterizeGaussiansCUDA(
 		out_color.contiguous().data<float>(),
 		out_features.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
-		debug);
+		debug,
+		send_alphas);
   }
-  return std::make_tuple(rendered, out_color,out_features, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color,out_features, tiles_depth_sorted,gaussian_sorted,alpha_tensor,radii, geomBuffer, binningBuffer, imgBuffer);
 }
 
 std::tuple<torch::Tensor, torch::Tensor,  torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>

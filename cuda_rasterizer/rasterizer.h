@@ -14,7 +14,7 @@
 
 #include <vector>
 #include <functional>
-
+#include <torch/extension.h>
 namespace CudaRasterizer
 {
 	class Rasterizer
@@ -28,7 +28,7 @@ namespace CudaRasterizer
 			float* projmatrix,
 			bool* present);
 
-		static int forward(
+		static std::tuple<int, torch::Tensor, torch::Tensor,torch::Tensor> forward(
 			std::function<char* (size_t)> geometryBuffer,
 			std::function<char* (size_t)> binningBuffer,
 			std::function<char* (size_t)> imageBuffer,
@@ -52,7 +52,8 @@ namespace CudaRasterizer
 			float* out_color,
 			float* out_color_bgr,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			bool send_alphs= false);
 
 		static void backward(
 			const int P, int D, int M, int R,

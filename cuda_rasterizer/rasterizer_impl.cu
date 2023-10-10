@@ -200,20 +200,6 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 
 
 
-CudaRasterizer::AlphaState CudaRasterizer::AlphaState::fromChunk(char*& chunk, size_t P)
-{
-	AlphaState binning;
-	obtain(chunk, binning.point_list, P, 128);
-	obtain(chunk, binning.point_list_unsorted, P, 128);
-	obtain(chunk, binning.point_list_keys, P, 128);
-	obtain(chunk, binning.point_list_keys_unsorted, P, 128);
-	cub::DeviceRadixSort::SortPairs(
-		nullptr, binning.sorting_size,
-		binning.point_list_keys_unsorted, binning.point_list_keys,
-		binning.point_list_unsorted, binning.point_list, P);
-	obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
-	return binning;
-}
 
 
 // Forward rendering procedure for differentiable rasterization
@@ -223,7 +209,6 @@ CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
-	std::function<char* (size_t)> alphaBuffer,
 	const int P, int D, int M,
 	const float* background,
 	const int width, int height,
@@ -244,7 +229,8 @@ CudaRasterizer::Rasterizer::forward(
 	float* out_color,
 	float* out_features,
 	int* radii,
-	bool debug)
+	bool debug,
+	bool send_alphas)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -318,12 +304,6 @@ CudaRasterizer::Rasterizer::forward(
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
 
 
-	// Rohith create the alpha buffer 
-
-	size_t alpha_chunk_size = required<AlphaState>(num_rendered);
-	char* alpha_chunkptr = alphaBuffer(alpha_chunk_size);
-	AlphaState alphaState = AlphaState::fromChunk(binning_chunkptr, num_rendered);
-
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
@@ -359,16 +339,6 @@ CudaRasterizer::Rasterizer::forward(
 
 
 	//Rohith code started
-	printf("Rohith Debug num_rendered: %d\n", num_rendered);
-
-	uint32_t point_offsets[P];   
-	CHECK_CUDA(cudaMemcpy(point_offsets,  geomState.point_offsets, P *sizeof(int), cudaMemcpyDeviceToHost), debug);
-	
-	uint32_t tiles_touched[P];   
-	CHECK_CUDA(cudaMemcpy(tiles_touched,  geomState.tiles_touched, P *sizeof(int), cudaMemcpyDeviceToHost), debug);
-
-	
-
 	uint64_t* cpuData_keys;
 	cpuData_keys = (uint64_t*)malloc(sizeof(uint64_t) * num_rendered);
 	cudaMemcpy(cpuData_keys, binningState.point_list_keys,num_rendered*sizeof(uint64_t), cudaMemcpyDeviceToHost);
@@ -382,21 +352,13 @@ CudaRasterizer::Rasterizer::forward(
 	torch::Tensor tensor_vals = torch::from_blob(cpuData_vals, {num_rendered}, options_32);
 
 	
-	uint2* image_ranges[tile_grid.x * tile_grid.y ];
-	CHECK_CUDA(cudaMemcpy(image_ranges, imgState.ranges, tile_grid.x * tile_grid.y * sizeof(uint2), cudaMemcpyDeviceToHost), debug);
-	/*
 	
-	for (int i = 0; i < (tile_grid.x * tile_grid.y); i++) {
-		std::cout<<image_ranges[i].x<<"  ";
-		std::cout<<image_ranges[i].y<<std::endl;
-    }
-
-	*/
 	c10::TensorOptions float_options;
 	torch::Device device(torch::kCUDA, 0);
 	float_options = float_options.dtype(c10::ScalarType::Float).device(device);
 	torch::Tensor alpha_tensor    = torch::full({num_rendered}, 0.0,float_options);
-	// Rohith code end
+	
+ 	// Rohith code end
 
 
 	// Let each tile blend its range of Gaussians independently in parallel
